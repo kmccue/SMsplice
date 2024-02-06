@@ -799,5 +799,99 @@ def viterbi(sequences, transitions, pIL, pELS, pELF, pELM, pELL, exonicSREs5s, e
         
     return bestPath, loglik, emissions5, emissions3
 
-
+def viterbi_intron(sequences, pIO, pIL, pELM, exonicSREs5s, exonicSREs3s, intronicSREs5s, intronicSREs3s, k, sreEffect5_exon, sreEffect5_intron, sreEffect3_exon, sreEffect3_intron, meDir = ''): 
+    # Get the best parses of all the input sequences
+    
+    batch_size = len(sequences)
+    tbindex = np.zeros(batch_size, dtype=np.dtype("i"))
+    lengths = np.zeros(batch_size, dtype=np.dtype("i"))
+    loglik = np.log(np.zeros(batch_size, dtype=np.dtype("d")))
+    
+    # Collect the lengths of each sequence in the batch
+    for g in range(batch_size): 
+        lengths[g] = len(sequences[g])
+    L = np.max(lengths)
+    
+    emissions3 = np.log(np.zeros((batch_size, L), dtype=np.dtype("d")))
+    emissions5 = np.log(np.zeros((batch_size, L), dtype=np.dtype("d"))) 
+    Three = np.log(np.zeros((batch_size, L), dtype=np.dtype("d")))    
+    Five = np.log(np.zeros((batch_size, L), dtype=np.dtype("d")))
+    traceback5 = np.zeros((batch_size, L), dtype=np.dtype("i")) + L
+    traceback3 = np.zeros((batch_size, L), dtype=np.dtype("i")) + L
+    bestPath = np.zeros((batch_size, L), dtype=np.dtype("i"))
+    
+    # Rewind state vars
+    exon = 2
+    intron = 1
+     
+    # Convert inputs to log space
+    pIO = np.log(pIO)
+    pEE = np.log(1 - np.exp(pIO))
+    pIL = np.log(pIL)
+    pELM = np.log(pELM)
+    
+    # Get the emissions and apply sre scores to them
+    for g in range(batch_size): 
+        # 5'SS exonic effects (upstream)
+        ssRange = 3
+        emissions5[g,:lengths[g]] = np.log(maxEnt5_single(sequences[g].lower(), meDir))
+        emissions5[g,k+ssRange:lengths[g]] += np.cumsum(exonicSREs5s[g,:lengths[g]-k+1])[:-1-ssRange]
+        emissions5[g,sreEffect5_exon+1:lengths[g]] -= np.cumsum(exonicSREs5s[g,:lengths[g]-k+1])[:-(sreEffect5_exon+1)+(k-1)]
+        
+        # 3'SS intronic effects (upstream)
+        ssRange = 19
+        emissions3[g,:lengths[g]] = np.log(maxEnt3_single(sequences[g].lower(), meDir))
+        emissions3[g,k+ssRange:lengths[g]] += np.cumsum(intronicSREs3s[g,:lengths[g]-k+1])[:-1-ssRange]
+        emissions3[g,sreEffect3_intron+1:lengths[g]] -= np.cumsum(intronicSREs3s[g,:lengths[g]-k+1])[:-(sreEffect3_intron+1)+(k-1)]
+        
+        # 5'SS intronic effects (downstream)
+        ssRange = 4
+        emissions5[g,:lengths[g]-sreEffect5_intron] += np.cumsum(intronicSREs5s[g,:lengths[g]-k+1])[sreEffect5_intron-k+1:]
+        emissions5[g,lengths[g]-sreEffect5_intron:lengths[g]-k+1-ssRange] += np.sum(intronicSREs5s[g,:lengths[g]-k+1])
+        emissions5[g,:lengths[g]-k+1-ssRange] -= np.cumsum(intronicSREs5s[g,ssRange:lengths[g]-k+1])
+        
+        # 3'SS exonic effects (downstream)
+        ssRange = 3
+        emissions3[g,:lengths[g]-sreEffect5_exon] += np.cumsum(exonicSREs3s[g,:lengths[g]-k+1])[sreEffect5_exon-k+1:]
+        emissions3[g,lengths[g]-sreEffect5_exon:lengths[g]-k+1-ssRange] += np.sum(exonicSREs3s[g,:lengths[g]-k+1])
+        emissions3[g,:lengths[g]-k+1-ssRange] -= np.cumsum(exonicSREs3s[g,ssRange:lengths[g]-k+1])
+    
+    
+    # Initialize the first and single exon probabilities
+    IS = np.zeros(batch_size, dtype=np.dtype("d"))
+    for g in range(batch_size): IS[g] = pIL[L-1] + pIO
+    
+    for g in range(batch_size): # loop the sequences in the batch
+        for t in range(1,lengths[g]):
+            Three[g,t] = pIL[t-1] + pEE
+            
+            for d in range(t,0,-1):
+                # 5'SS
+                if Three[g,t-d-1] + pELM[d-1] > Five[g,t]:
+                    traceback5[g,t] = d
+                    Five[g,t] = Three[g,t-d-1] + pELM[d-1]
+            
+                # 3'SS
+                if Five[g,t-d-1] + pIL[d-1] > Three[g,t]:
+                    traceback3[g,t] = d
+                    Three[g,t] = Five[g,t-d-1] + pIL[d-1]
+                    
+            Five[g,t] += emissions5[g,t]
+            Three[g,t] += emissions3[g,t]
+            
+        for i in range(1, lengths[g]):
+            if Five[g,i] + pIO + pIL[lengths[g]-i-2] > loglik[g]:
+                loglik[g] = Five[g,i] + pIO + pIL[lengths[g]-i-2]
+                tbindex[g] = i
+                
+        if IS[g] <= loglik[g]: # If the single intron case isn't better, trace back
+            while 0 < tbindex[g]:
+                bestPath[g,tbindex[g]] = 5
+                tbindex[g] -= traceback5[g,tbindex[g]] + 1 
+                bestPath[g,tbindex[g]] = 3
+                tbindex[g] -= traceback3[g,tbindex[g]] + 1
+        else:
+            loglik[g] = IS[g]
+        
+    return bestPath, loglik, emissions5, emissions3
 
